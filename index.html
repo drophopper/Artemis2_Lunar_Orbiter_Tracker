@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Artemis II - Ultimate Mission Control</title>
+    <style>
+        :root { 
+            --bg: #020408; --accent: #4a90e2; --orbit: #00d1b2; --highlight: #f5a623; --engine: #ff4500; --text: #e0e6ed; --reentry: #ffcc00;
+        }
+        body { 
+            background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, sans-serif; 
+            margin: 0; overflow: hidden; display: flex; flex-direction: column; height: 100vh; 
+        }
+        header {
+            background: rgba(10, 14, 20, 0.9); padding: 10px 20px; border-bottom: 1px solid #1f2235;
+            display: flex; justify-content: space-between; align-items: center; height: 45px; z-index: 10;
+        }
+        .controls { 
+            background: rgba(7, 10, 15, 0.8); padding: 10px 20px; border-bottom: 1px solid #1a1d2e; 
+            display: flex; gap: 20px; align-items: center; height: 35px; z-index: 10;
+        }
+        .viewport { 
+            position: relative; flex-grow: 1; 
+            background: radial-gradient(circle at center, #0a1324 0%, #020408 100%);
+            overflow: hidden;
+        }
+        canvas#stars { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; transition: opacity 0.3s; }
+        
+        /* Telemetrie mit Zitter-Effekt */
+        .telemetry { 
+            position: absolute; top: 20px; left: 20px; width: 260px; 
+            background: rgba(5, 8, 15, 0.85); border-left: 3px solid var(--accent);
+            padding: 15px; z-index: 1000; pointer-events: none; backdrop-filter: blur(4px);
+            transition: transform 0.05s;
+        }
+        .tel-row { display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); padding: 5px 0; }
+        .tel-label { font-size: 0.65rem; color: #8899aa; text-transform: uppercase; letter-spacing: 1px; }
+        .tel-val { font-size: 0.85rem; color: var(--highlight); font-weight: bold; }
+        .focus-data { display: none; text-align: center; color: var(--highlight); font-size: 2rem; padding: 20px 0; }
+
+        .timeline-container { height: 65px; background: #0a0e14; border-top: 1px solid #1a1d2e; position: relative; cursor: pointer; z-index: 10; }
+        .timeline-progress { position: absolute; top: 0; left: 0; height: 100%; background: rgba(74, 144, 226, 0.15); border-right: 2px solid var(--accent); width: 0%; pointer-events: none; }
+        .timeline-grid { display: flex; height: 100%; position: relative; z-index: 2; }
+        .day-mark { flex: 1; border-right: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: center; align-items: center; font-size: 0.7rem; color: #5c6a79; }
+        .day-mark.active { color: #fff; background: rgba(255,255,255,0.08); font-weight: bold; }
+
+        #engine-flame { display: none; filter: drop-shadow(0 0 10px var(--engine)); }
+        .engine-active #engine-flame { display: block; }
+        
+        /* Re-Entry Glühen */
+        #reentry-glow { display: none; fill: var(--reentry); filter: blur(3px) drop-shadow(0 0 10px var(--engine)); opacity: 0.7; }
+        .reentry-active #reentry-glow { display: block; }
+
+        @keyframes twinkle { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+        @keyframes vibration { 0% { transform: translate(0, 0); } 50% { transform: translate(2px, 1px); } 100% { transform: translate(-1px, 2px); } }
+
+        /* Multi-View Modi */
+        body.focus-view .telemetry { width: 400px; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+        body.focus-view .tel-row { font-size: 1.2rem; padding: 10px 0; }
+        body.focus-view .focus-data { display: block; }
+        body.focus-view svg { opacity: 0.1; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div style="letter-spacing: 3px; font-weight: bold;">ARTEMIS II <span style="font-weight: 100; color: #5c6a79;">| ULTIMATE TRAJECTORY</span></div>
+    <div id="met-clock" style="color:var(--accent); font-size: 1.1rem; font-family: monospace;">00d 00h 00m 00s</div>
+</header>
+
+<div class="controls">
+    <button onclick="syncToLive()" style="cursor:pointer; background:#1a1d2e; color:white; border:1px solid #333; padding:2px 10px;">SYNC LIVE</button>
+    <button onclick="toggleView()" style="cursor:pointer; background:var(--accent); color:white; border:none; padding:2px 10px;">FOCUS VIEW</button>
+    <div style="font-size:0.75rem;">WARP: <span id="speedVal" style="color:var(--highlight);">1x</span></div>
+    <input type="range" id="speedRange" min="1" max="50000" value="1" style="width:200px;">
+</div>
+
+<div class="viewport">
+    <canvas id="stars"></canvas>
+    <div class="telemetry" id="tel-unit">
+        <div class="focus-data" id="focus-mach">Mach 0.0</div>
+        <div class="tel-row"><span class="tel-label">Velocity</span><span id="tel-kmh" class="tel-val">0 km/h</span></div>
+        <div class="tel-row"><span class="tel-label">Mach-Number</span><span id="tel-mach" class="tel-val">Mach 0.0</span></div>
+        <div class="tel-row"><span class="tel-label">G-Force</span><span id="tel-g" class="tel-val">0.000 G</span></div>
+        <div class="tel-row"><span class="tel-label">Phase</span><span id="tel-phase" class="tel-val" style="color:var(--orbit)">IDLE</span></div>
+        <div class="tel-row"><span class="tel-label">Dist. Earth</span><span id="tel-earth" class="tel-val">0 km</span></div>
+        <div class="tel-row"><span class="tel-label">Dist. Moon</span><span id="tel-moon" class="tel-val">0 km</span></div>
+    </div>
+
+    <svg viewBox="0 0 1200 600" preserveAspectRatio="xMidYMid slice" id="map-svg">
+        <defs>
+            <radialGradient id="earthGrad"><stop offset="0%" stop-color="#4a90e2"/><stop offset="100%" stop-color="#0a1a33"/></radialGradient>
+        </defs>
+        <circle cx="300" cy="300" r="45" fill="url(#earthGrad)" stroke="var(--accent)" stroke-width="0.5" />
+        <circle cx="1050" cy="300" r="22" fill="#1c1d21" stroke="#444" />
+        
+        <path id="path-orbit" d="M 300,220 A 80,80 0 1,1 300,380 A 80,80 0 1,1 300,220 A 80,80 0 1,1 300,380 A 80,80 0 1,1 300,220" fill="none" stroke="var(--orbit)" stroke-width="1" stroke-dasharray="4,4" opacity="0.3" />
+        <path id="path-flyby" d="M 300,220 C 450,220 850,120 1020,250 C 1100,310 1080,380 1000,330 C 800,200 500,450 345,345" fill="none" stroke="var(--orbit)" stroke-width="1.2" stroke-dasharray="6,3" opacity="0.2" />
+        
+        <g id="orion">
+            <path id="reentry-glow" d="M 25,0 C 25,10 10,25 -10,25 C -25,25 -35,10 -35,0 C -35,-10 -25,-25 -10,-25 C 10,-25 25,-10 25,0 Z" fill="var(--reentry)" />
+            <g id="engine-flame">
+                <path d="M -12,0 L -30,-10 L -24,0 L -30,10 Z" fill="var(--engine)">
+                    <animate attributeName="opacity" values="0.6;1;0.6" dur="0.04s" repeatCount="indefinite" />
+                </path>
+            </g>
+            <path d="M 15,0 L -10,10 L -6,0 L -10,-10 Z" fill="#fff" stroke="#333" stroke-width="0.5" />
+        </g>
+    </svg>
+</div>
+
+<div class="timeline-container" id="timeline-box">
+    <div class="timeline-progress" id="timeline-bar"></div>
+    <div class="timeline-grid" id="day-grid"></div>
+</div>
+
+<script>
+    const LAUNCH_DATE = Date.UTC(2026, 3, 1, 22, 35, 12); 
+    const MISSION_DURATION_SEC = 10 * 24 * 3600; 
+    const pathOrbit = document.getElementById('path-orbit');
+    const pathFlyby = document.getElementById('path-flyby');
+    const orbitLen = pathOrbit.getTotalLength();
+    const flybyLen = pathFlyby.getTotalLength();
+    const kmPerPixel = 384400 / 750;
+
+    let missionSec = 0, warp = 1, isLive = true, lastUpdate = Date.now();
+    let stars = [];
+
+    // Starfield Generator
+    const canvas = document.getElementById('stars');
+    const ctx = canvas.getContext('2d');
+    function initStars() {
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+        stars = []; for(let i=0; i<200; i++) stars.push({x: Math.random()*canvas.width, y: Math.random()*canvas.height, size: Math.random()*1.5, op: Math.random(), sp: 0.005+Math.random()*0.01});
+    }
+    function drawStars() {
+        ctx.clearRect(0,0, canvas.width, canvas.height);
+        stars.forEach(s => { s.op += s.sp; if(s.op>1||s.op<0) s.sp*=-1; ctx.fillStyle=`rgba(255, 255, 255, ${s.op})`; ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI*2); ctx.fill(); });
+        requestAnimationFrame(drawStars);
+    }
+
+    // UI & Grid Init
+    const grid = document.getElementById('day-grid');
+    for(let i=1; i<=10; i++) {
+        const d = document.createElement('div'); d.className='day-mark'; d.id=`day-mark-${i}`; d.innerHTML=`TAG ${i}`; grid.appendChild(d);
+    }
+
+    function syncToLive() { missionSec = (Date.now() - LAUNCH_DATE) / 1000; warp = 1; isLive = true; document.getElementById('speedRange').value=1; }
+    document.getElementById('speedRange').oninput = (e) => { warp = parseInt(e.target.value); isLive = (warp === 1); document.getElementById('speedVal').innerText = warp + "x"; };
+    document.getElementById('timeline-box').onclick = (e) => { missionSec = ((e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.getBoundingClientRect().width) * MISSION_DURATION_SEC; isLive = false; };
+    function toggleView() { document.body.classList.toggle('focus-view'); document.body.classList.contains('focus-view') ? document.body.classList.add('vibrating') : document.body.classList.remove('vibrating'); }
+
+    function update() {
+        const now = Date.now(); const dt = (now - lastUpdate) / 1000; lastUpdate = now;
+        if (isLive) missionSec = (now - LAUNCH_DATE) / 1000; else missionSec += dt * warp;
+        if (missionSec > MISSION_DURATION_SEC) missionSec = MISSION_DURATION_SEC;
+        if (missionSec < 0) missionSec = 0; 
+        const pct = missionSec / MISSION_DURATION_SEC;
+        
+        let pos, nextPos, vel = 28000, g = 0.001 + Math.random()*0.004, engine = false, reentry = false, phase = "IDLE";
+        const telUnit = document.getElementById('tel-unit');
+
+        // --- EXAKTES FLUG-PROFIL (Tag 0-10) ---
+        if (pct < 0.20) { // Tag 0-2 (Orbit)
+            const curLen = (pct / 0.20) * orbitLen;
+            pos = pathOrbit.getPointAtLength(curLen);
+            nextPos = pathOrbit.getPointAtLength(Math.min(curLen + 0.5, orbitLen));
+            vel = 28000 + Math.sin(pct * Math.PI * 10) * 1200;
+            phase = "EARTH ORBIT (HEO)";
+        } else { // Tag 2-10 (Ausbruch & Flyby)
+            const curLen = ((pct - 0.20) / 0.80) * flybyLen;
+            pos = pathFlyby.getPointAtLength(curLen);
+            nextPos = pathFlyby.getPointAtLength(Math.min(curLen + 0.5, flybyLen));
+            
+            if (pct >= 0.20 && pct < 0.21) { // Zündung (exakt Tag 2)
+                let t = (pct - 0.20) / 0.01; vel = 29500 + t * 10000; g = 3.5 + Math.random()*0.2; engine = true; phase = "TLI BURN (ZÜNDUNG)";
+            } else if (pct < 0.60) { // Hinflug (Tag 2,1-6)
+                let t = (pct - 0.21) / (0.60 - 0.21);
+                vel = 39500 - (t * 35000); 
+                phase = "TRANSLUNAR COAST";
+            } else if (pct < 0.65) { // Flyby (Tag 6)
+                let t = (pct - 0.60) / 0.05; vel = 4500 + Math.sin(t * Math.PI) * 6000; phase = "LUNAR FLYBY";
+            } else { // Rückflug (Tag 6,5-10)
+                let t = (pct - 0.65) / 0.35;
+                vel = 6000 + (Math.pow(t, 2) * 34000); 
+                phase = "RETURNING TO EARTH";
+                // Re-Entry Glühen ab Mach 25
+                if (vel > 30800) reentry = true;
+            }
+        }
+        
+        // Zitter-Effekt bei hoher G-Kraft
+        telUnit.style.animation = g > 2.0 ? 'vibration 0.05s infinite' : 'none';
+
+        const rot = Math.atan2(nextPos.y - pos.y, nextPos.x - pos.x) * 180 / Math.PI;
+        const orion = document.getElementById('orion');
+        orion.setAttribute('transform', `translate(${pos.x}, ${pos.y}) rotate(${rot})`);
+        orion.classList.toggle('engine-active', engine);
+        orion.classList.toggle('reentry-active', reentry);
+
+        const machNum = vel / 1235;
+        document.getElementById('tel-g').innerText = g.toFixed(3) + " G";
+        document.getElementById('tel-kmh').innerText = Math.floor(vel).toLocaleString() + " km/h";
+        document.getElementById('tel-mach').innerText = "Mach " + machNum.toFixed(1);
+        document.getElementById('focus-mach').innerText = "Mach " + machNum.toFixed(1);
+        document.getElementById('tel-earth').innerText = Math.floor(Math.sqrt((300-pos.x)**2 + (300-pos.y)**2)*kmPerPixel).toLocaleString() + " km";
+        document.getElementById('tel-moon').innerText = Math.floor(Math.sqrt((1050-pos.x)**2 + (300-pos.y)**2)*kmPerPixel).toLocaleString() + " km";
+        document.getElementById('tel-phase').innerText = phase;
+        document.getElementById('timeline-bar').style.width = (pct * 100) + "%";
+        
+        const d = Math.floor(missionSec / 86400);
+        document.querySelectorAll('.day-mark').forEach(el => el.classList.remove('active'));
+        const activeDayElem = document.getElementById(`day-mark-${Math.min(10, d+1)}`);
+        if (activeDayElem) activeDayElem.classList.add('active');
+
+        const hours = Math.floor((missionSec % 86400) / 3600);
+        const mins = Math.floor((missionSec % 3600) / 60);
+        const secs = Math.floor(missionSec % 60);
+        document.getElementById('met-clock').innerText = `${d}d ${hours.toString().padStart(2,'0')}h ${mins.toString().padStart(2,'0')}m ${secs.toString().padStart(2,'0')}s`;
+
+        requestAnimationFrame(update);
+    }
+
+    initStars(); drawStars(); syncToLive(); update();
+    window.onresize = initStars;
+</script>
+</body>
+</html>
